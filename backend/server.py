@@ -39,6 +39,7 @@ EMAIL_BASE_URL = "https://integrations.emergentagent.com"
 EMAIL_KEY = os.environ.get("EMERGENT_EMAIL_KEY")
 EMAIL_FROM_NAME = os.environ.get("EMAIL_FROM_NAME", "Painel CT-e")
 EMAIL_REPLY_TO = os.environ.get("EMAIL_REPLY_TO")
+PUBLIC_URL = (os.environ.get("PUBLIC_URL") or "").rstrip("/")
 
 MIME_TYPES = {
     "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
@@ -355,10 +356,10 @@ def _assert_safe_email(subject: str, html: str) -> None:
                 raise ValueError(f"Anchor text {m.group(1)!r} != real link host {real!r} (G3)")
 
 
-async def _resend_send(to: str, subject: str, html: str, attachments: List[dict], reply_to: Optional[str]) -> Optional[str]:
+async def _resend_send(to: List[str], subject: str, html: str, attachments: List[dict], reply_to: Optional[str]) -> Optional[str]:
     _assert_safe_email(subject, html)
     payload = {
-        "to": [to],
+        "to": to,
         "subject": subject,
         "html": html,
         "from_name": EMAIL_FROM_NAME,
@@ -367,7 +368,7 @@ async def _resend_send(to: str, subject: str, html: str, attachments: List[dict]
         payload["attachments"] = attachments
     if reply_to or EMAIL_REPLY_TO:
         payload["contact_email"] = reply_to or EMAIL_REPLY_TO
-    async with httpx.AsyncClient(timeout=60) as clientx:
+    async with httpx.AsyncClient(timeout=120) as clientx:
         resp = await clientx.post(
             f"{EMAIL_BASE_URL}/api/v1/email/send",
             headers={"X-Email-Key": EMAIL_KEY},
@@ -383,9 +384,22 @@ async def _resend_send(to: str, subject: str, html: str, attachments: List[dict]
 
 
 class SendEmailPayload(BaseModel):
-    to: EmailStr
+    to: str  # CSV or single email
     message: Optional[str] = None
     attach_receipts: bool = True
+
+
+def _parse_recipients(raw: str) -> List[str]:
+    parts = re.split(r"[,;\s]+", (raw or "").strip())
+    emails = [p.strip() for p in parts if p.strip()]
+    valid = []
+    seen = set()
+    email_rx = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    for e in emails:
+        if email_rx.match(e) and e.lower() not in seen:
+            valid.append(e)
+            seen.add(e.lower())
+    return valid
 
 
 def _mask_cnpj_pt(cnpj: str) -> str:
@@ -401,7 +415,7 @@ def _format_brl(v: float) -> str:
     return "R$ " + s.replace(",", "X").replace(".", ",").replace("X", ".")
 
 
-def _build_email_html(record: dict, message: Optional[str], attachments_count: int) -> str:
+def _build_email_html(record: dict, message: Optional[str], attachments: List[dict], download_links: List[dict]) -> str:
     company = escape(record.get("company_name", ""))
     cnpj = escape(_mask_cnpj_pt(record.get("cnpj", "")))
     cte = escape(record.get("cte_number", ""))
@@ -412,11 +426,28 @@ def _build_email_html(record: dict, message: Optional[str], attachments_count: i
         f'<tr><td style="padding:8px 0;color:#64748b;font-size:12px;text-transform:uppercase;letter-spacing:0.08em;width:150px">Observações</td>'
         f'<td style="padding:8px 0;color:#0f172a;font-size:14px">{notes}</td></tr>'
     ) if notes else ""
-    attach_html = (
-        f'<p style="margin:16px 0 0;color:#64748b;font-size:12px">Comprovantes anexados: <strong>{attachments_count}</strong></p>'
-        if attachments_count else
-        '<p style="margin:16px 0 0;color:#64748b;font-size:12px">Nenhum comprovante anexado neste envio.</p>'
-    )
+
+    if download_links:
+        rows = "".join(
+            f'<tr><td style="padding:6px 0">'
+            f'<span style="color:#0f172a;font-size:14px;font-weight:600">&#128206; {escape(d["filename"])}</span> '
+            f'<span style="color:#94a3b8;font-size:12px">&middot; {escape(d["size"])} &middot; </span>'
+            f'<a href="{escape(d["url"])}" '
+            f'style="color:#059669;font-size:13px;font-weight:600;text-decoration:underline">Baixar</a>'
+            f'</td></tr>'
+            for d in download_links
+        )
+        receipts_section = (
+            f'<div style="margin-top:24px;padding-top:16px;border-top:1px solid #e2e8f0">'
+            f'<div style="color:#64748b;font-size:12px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px">'
+            f'Comprovantes ({len(download_links)})</div>'
+            f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0">{rows}</table>'
+            f'<p style="margin:10px 0 0;color:#94a3b8;font-size:11px">Os arquivos também estão anexados ao e-mail. Se não aparecerem no seu cliente, use os links acima para baixar.</p>'
+            f'</div>'
+        )
+    else:
+        receipts_section = '<p style="margin:16px 0 0;color:#64748b;font-size:12px">Nenhum comprovante anexado neste envio.</p>'
+
     return (
         f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;padding:24px 0;font-family:Arial,Helvetica,sans-serif">'
         f'<tr><td align="center">'
@@ -436,7 +467,7 @@ def _build_email_html(record: dict, message: Optional[str], attachments_count: i
         f'<td style="padding:8px 0;color:#059669;font-size:16px;font-weight:700">{valor}</td></tr>'
         f'{notes_row}'
         f'</table>'
-        f'{attach_html}'
+        f'{receipts_section}'
         f'</td></tr>'
         f'<tr><td style="padding:16px 24px;background:#f1f5f9;color:#94a3b8;font-size:11px">'
         f'Enviado por {escape(EMAIL_FROM_NAME)}. Este é um e-mail transacional automático.'
@@ -454,7 +485,14 @@ async def send_record_email(record_id: str, payload: SendEmailPayload):
     if not record:
         raise HTTPException(status_code=404, detail="Registro não encontrado")
 
+    recipients = _parse_recipients(payload.to)
+    if not recipients:
+        raise HTTPException(status_code=400, detail="Informe pelo menos um e-mail válido")
+    if len(recipients) > 20:
+        raise HTTPException(status_code=400, detail="Máximo de 20 destinatários por envio")
+
     attachments = []
+    download_links = []
     total_size = 0
     if payload.attach_receipts:
         for r in (record.get("receipts") or []):
@@ -466,31 +504,42 @@ async def send_record_email(record_id: str, payload: SendEmailPayload):
             except Exception as e:
                 logger.error(f"Skipping attachment {r.get('id')}: {e}")
                 continue
-            total_size += len(data)
+            fname = file_doc.get("original_filename") or f"comprovante-{r.get('id')}.bin"
+            ctype = file_doc.get("content_type") or "application/octet-stream"
+            size = len(data)
+            if PUBLIC_URL:
+                download_links.append({
+                    "url": f"{PUBLIC_URL}/api/files/{r.get('id')}",
+                    "filename": fname,
+                    "size": _human_size(size),
+                })
+            total_size += size
             if total_size > 20 * 1024 * 1024:
-                logger.warning("Anexos excedem 20MB — parando de anexar")
-                break
+                logger.warning("Anexos excedem 20MB — parando de anexar binário (links continuam)")
+                continue
             attachments.append({
-                "filename": file_doc.get("original_filename") or f"comprovante-{r.get('id')}.bin",
+                "filename": fname,
                 "content": base64.b64encode(data).decode("ascii"),
+                "content_type": ctype,
+                "type": ctype,
             })
 
     subject = f"CT-e {record.get('cte_number','')} - {record.get('company_name','')}"[:150]
-    html = _build_email_html(record, payload.message, len(attachments))
+    html = _build_email_html(record, payload.message, attachments, download_links)
     email_id = await _resend_send(
-        to=payload.to,
+        to=recipients,
         subject=subject,
         html=html,
         attachments=attachments,
         reply_to=EMAIL_REPLY_TO,
     )
 
-    # Save recipient as default if none saved yet
+    # Save first recipient as default if none saved yet
     existing = await db.settings.find_one({"_id": SETTINGS_ID}, {"_id": 0})
     if not existing or not existing.get("default_recipient"):
         await db.settings.update_one(
             {"_id": SETTINGS_ID},
-            {"$set": {"default_recipient": payload.to}},
+            {"$set": {"default_recipient": recipients[0]}},
             upsert=True,
         )
 
@@ -498,8 +547,17 @@ async def send_record_email(record_id: str, payload: SendEmailPayload):
         "ok": True,
         "email_id": email_id,
         "attachments_count": len(attachments),
-        "to": payload.to,
+        "download_links_count": len(download_links),
+        "recipients": recipients,
     }
+
+
+def _human_size(n: int) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024:
+            return f"{n:.1f} {unit}" if unit != "B" else f"{n} B"
+        n = n / 1024
+    return f"{n:.1f} TB"
 
 
 @api_router.get("/stats")
