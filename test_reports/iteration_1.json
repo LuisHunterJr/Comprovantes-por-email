@@ -1,0 +1,35 @@
+{
+  "summary": "First-finish smoke test of CT-e Painel. Backend (11 endpoint checks) and frontend (full record creation flow) both work end-to-end. One minor UX quirk in payment value parsing.",
+  "tested_scope": ["backend", "frontend", "integration"],
+  "passed": [
+    "GET /api/cnpj/33000167000101 -> 200, razao_social='PETROLEO BRASILEIRO S A PETROBRAS'",
+    "GET /api/cnpj with 13 digits -> 400 'CNPJ deve conter 14 dígitos'",
+    "GET /api/cnpj/00000000000000 -> 404 'CNPJ não encontrado'",
+    "POST /api/uploads PNG -> 200 with {id, storage_path, original_filename, content_type, size}",
+    "POST /api/uploads .txt -> 400 'Tipo de arquivo não permitido'",
+    "GET /api/files/{id} -> 200 image/png (Emergent Object Storage integration working)",
+    "POST /api/records -> 200 create record; invalid CNPJ -> 400",
+    "GET /api/records?q=33000167 filters correctly",
+    "DELETE /api/records/{id} -> 200",
+    "GET /api/stats -> 200 with total_records/total_value/total_receipts/average_value",
+    "Frontend: Dashboard loads, CNPJ mask + auto-fill of razão social works (BrasilAPI badge visible)",
+    "Frontend: CT-e prominent banner shows number + Copiar button",
+    "Frontend: Receipt dropzone accepts PNG, receipt-file-item rendered, counter updates",
+    "Frontend: Submit creates row in records-table with company + BRL value + receipts count",
+    "Frontend: records-search-input filters by CNPJ substring"
+  ],
+  "failed": [
+    {
+      "area": "frontend",
+      "issue": "Payment value input parses '2500.75' as 250075 -> displays 'R$ 250.075,00'. In pt-BR the decimal separator is ',' but the input does not treat '.' as decimal, effectively multiplying by 100 when user types with a dot.",
+      "evidence": "Typed '2500.75', on blur field showed 'R$ 250.075,00' and record was persisted with payment_value reflecting that. Screenshot: .screenshots/after_submit.png",
+      "priority": "MEDIUM"
+    }
+  ],
+  "action_items": [
+    "Consider normalizing payment_value input: accept both '.' and ',' as decimal separator, or strip formatting before parseFloat so 2500.75 stays R$ 2.500,75."
+  ],
+  "success_rate": {"backend": "100%", "frontend": "95%"},
+  "retest_needed": false,
+  "full_testing_deferred": true
+}

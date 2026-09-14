@@ -1,0 +1,60 @@
+.App {
+  font-family: "Inter", system-ui, sans-serif;
+}
+
+/* CTe barcode ornament */
+.cte-barcode {
+  background-image: repeating-linear-gradient(
+    90deg,
+    rgba(165, 180, 252, 0.9) 0 2px,
+    transparent 2px 4px,
+    rgba(165, 180, 252, 0.6) 4px 5px,
+    transparent 5px 8px,
+    rgba(165, 180, 252, 0.9) 8px 11px,
+    transparent 11px 13px
+  );
+  height: 34px;
+  border-radius: 2px;
+  opacity: 0.75;
+}
+
+.cte-grid-bg {
+  background-image:
+    linear-gradient(rgba(99, 102, 241, 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(99, 102, 241, 0.08) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+.font-display {
+  font-family: "Barlow Condensed", "Outfit", sans-serif;
+  letter-spacing: 0.02em;
+}
+
+.font-mono-strong {
+  font-family: "JetBrains Mono", "Roboto Mono", monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.dropzone-active {
+  border-color: #10B981 !important;
+  background-color: rgba(16, 185, 129, 0.08);
+}
+
+/* Subtle scan animation on CTe highlight */
+@keyframes scanline {
+  0% { transform: translateY(-100%); opacity: 0; }
+  40% { opacity: 0.6; }
+  100% { transform: translateY(300%); opacity: 0; }
+}
+
+.cte-scanline::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 30%;
+  background: linear-gradient(180deg, transparent, rgba(129, 140, 248, 0.15), transparent);
+  animation: scanline 4s ease-in-out infinite;
+  pointer-events: none;
+}

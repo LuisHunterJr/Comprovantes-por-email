@@ -1,0 +1,136 @@
+{
+  "project_title": "Painel de Gestão de CTe e Comprovantes de Pagamento",
+  "app_type": "dashboard",
+  "language": "pt-BR",
+  "archetype": "THE PERFORMANCE PRO / TACTICAL LOGISTICS FINTECH",
+  "theme": {
+    "default_mode": "dark",
+    "theme_toggle": true,
+    "colors": {
+      "dark": {
+        "background": "#0B0F17",
+        "surface": "#111827",
+        "surface_elevated": "#1F2937",
+        "border": "#374151",
+        "border_subtle": "rgba(255, 255, 255, 0.08)",
+        "primary_emerald": "#10B981",
+        "primary_emerald_hover": "#059669",
+        "accent_amber": "#F59E0B",
+        "accent_cyan": "#06B6D4",
+        "cte_highlight_bg": "#1E1B4B",
+        "cte_highlight_border": "#6366F1",
+        "cte_highlight_text": "#818CF8",
+        "cte_highlight_accent": "#A5B4FC",
+        "text_primary": "#F9FAFB",
+        "text_secondary": "#9CA3AF",
+        "text_muted": "#6B7280",
+        "status": {
+          "pago": { "bg": "#064E3B", "text": "#34D399", "border": "#059669" },
+          "pendente": { "bg": "#78350F", "text": "#FBBF24", "border": "#D97706" },
+          "processando": { "bg": "#1E3A8A", "text": "#60A5FA", "border": "#2563EB" },
+          "cancelado": { "bg": "#7F1D1D", "text": "#FCA5A5", "border": "#DC2626" }
+        }
+      },
+      "light": {
+        "background": "#F8FAFC",
+        "surface": "#FFFFFF",
+        "surface_elevated": "#F1F5F9",
+        "border": "#E2E8F0",
+        "border_subtle": "#CBD5E1",
+        "primary_emerald": "#059669",
+        "accent_amber": "#D97706",
+        "accent_cyan": "#0284C7",
+        "cte_highlight_bg": "#EEF2FF",
+        "cte_highlight_border": "#4338CA",
+        "cte_highlight_text": "#3730A3",
+        "cte_highlight_accent": "#4F46E5",
+        "text_primary": "#0F172A",
+        "text_secondary": "#475569",
+        "text_muted": "#94A3B8"
+      }
+    }
+  },
+  "typography": {
+    "heading_font": "Barlow Condensed, Outfit, sans-serif",
+    "body_font": "Inter, system-ui, sans-serif",
+    "mono_font": "JetBrains Mono, Roboto Mono, monospace",
+    "hierarchy": {
+      "cte_hero_display": "text-4xl md:text-5xl font-extrabold tracking-wider font-mono",
+      "h1": "text-2xl md:text-3xl font-bold tracking-tight",
+      "h2": "text-xl md:text-2xl font-semibold tracking-tight",
+      "h3": "text-lg font-medium",
+      "body": "text-sm md:text-base leading-relaxed",
+      "caption": "text-xs font-medium tracking-wide text-muted-foreground uppercase"
+    }
+  },
+  "layout_and_spacing": {
+    "container_padding": "p-4 md:p-8 space-y-8",
+    "grid_structure": "grid grid-cols-1 lg:grid-cols-12 gap-6",
+    "form_card_span": "lg:col-span-5 xl:col-span-5",
+    "table_card_span": "lg:col-span-7 xl:col-span-7",
+    "summary_stats_grid": "grid grid-cols-2 md:grid-cols-4 gap-4"
+  },
+  "key_features_and_ux": {
+    "cnpj_auto_lookup": {
+      "endpoint": "https://brasilapi.com.br/api/cnpj/v1/{cnpj}",
+      "behavior": "Input with mask (00.000.000/0001-00). On 14 digits blur/change, show spinner badge 'Buscando Razão Social na Receita...'. Auto-fill Company Name field. Fallback manual editing with badge 'Preenchimento Automático' or 'Preenchimento Manual'. Mock pre-sets for immediate testing (e.g. 33.000.019/0001-28 - TELEFONICA BRASIL, 60.701.190/0001-04 - ITAU UNIBANCO)."
+    },
+    "cte_prominent_display": {
+      "design_requirement": "ULTRA-PROMINENT CTe NUMBER CALLOUT. Must be designed as a tactical digital ticket/pass module with gradient border, monospaced font, glowing badge, scan barcode visual SVG ornament, copy-to-clipboard button, and quick-verify indicator.",
+      "format": "CT-e nº 000.128.945 (Chave de Acesso 44-digits support with quick popover/tooltip)"
+    },
+    "payment_value_input": {
+      "formatting": "BRL Currency auto-formatter (e.g. R$ 12.450,80).",
+      "quick_amounts": "Quick preset buttons (+R$ 100, +R$ 500, +R$ 1.000, Valor Total CTe)"
+    },
+    "multi_file_upload": {
+      "limit": 5,
+      "allowed_types": ["application/pdf", "image/png", "image/jpeg", "image/webp"],
+      "ui_components": "Drag-and-drop zone with clear progress indicator 'x de 5 comprovantes anexados', thumbnail previews with file size, PDF icon badge, quick modal view for image/PDF zoom, remove button per file, and remaining counter badge."
+    },
+    "records_table": {
+      "capabilities": "Filter by CNPJ, Company Name, CTe Number, Date Range, Payment Status. Sorting by Date and Value. Quick action menu (View receipt modal, Edit, Download PDF summary, Delete). KPI stats counters at top (Total CTe Cadastrados, Valor Total Pago, Pendentes de Validação, Média por CTe)."
+    }
+  },
+  "data_testid_convention": {
+    "rules": "All interactive elements (buttons, inputs, filters, table rows, file upload dropzones) MUST contain clear kebab-case data-testid attributes.",
+    "key_test_ids": [
+      "data-testid='cnpj-input'",
+      "data-testid='cnpj-lookup-btn'",
+      "data-testid='company-name-input'",
+      "data-testid='cte-number-input'",
+      "data-testid='cte-prominent-banner'",
+      "data-testid='payment-value-input'",
+      "data-testid='payment-date-input'",
+      "data-testid='receipt-upload-dropzone'",
+      "data-testid='receipt-file-item'",
+      "data-testid='submit-record-btn'",
+      "data-testid='records-search-input'",
+      "data-testid='status-filter-select'",
+      "data-testid='records-table'",
+      "data-testid='export-csv-btn'",
+      "data-testid='theme-toggle-btn'"
+    ]
+  },
+  "media_assets": [
+    {
+      "category": "hero_background_logistics",
+      "url": "https://images.unsplash.com/photo-1703194531119-e8b98a555cb6?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzNzl8MHwxfHNlYXJjaHwxfHxsb2dpc3RpY3MlMjB0cnVjayUyMHRyYW5zcG9ydCUyMGh1YiUyMGZpbmFuY2V8ZW58MHx8fHwxNzg5NDA3ODAzfDA&ixlib=rb-4.1.0&q=85",
+      "description": "Logistics hub parking lot with semi trucks for header background accent"
+    },
+    {
+      "category": "container_terminal_banner",
+      "url": "https://images.unsplash.com/photo-1759272840538-ae4b07214c71?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzNzl8MHwxfHNlYXJjaHwyfHxsb2dpc3RpY3MlMjB0cnVjayUyMHRyYW5zcG9ydCUyMGh1YiUyMGZpbmFuY2V8ZW58MHx8fHwxNzg5NDA3ODAzfDA&ixlib=rb-4.1.0&q=85",
+      "description": "Shipping container port terminal at sunset for dashboard banner"
+    }
+  ],
+  "instructions_to_main_agent": [
+    "Implement a complete, production-ready React Dashboard in JavaScript (.js / .jsx files). Do NOT use .tsx files.",
+    "Connect CNPJ auto-lookup to BrasilAPI (https://brasilapi.com.br/api/cnpj/v1/{cnpj}) with automatic clean formatting and graceful fallback.",
+    "Highlight CTe Number with extreme emphasis using a dark indigo or neon indigo card with monospaced text, barcode SVG graphic, and copy action.",
+    "Implement payment receipt dropzone allowing up to 5 files with drag-and-drop, PDF/image thumbnail previews, and preview modal.",
+    "Include sample seed records (e.g. 5 realistic Brazilian freight CTe records) so the dashboard looks rich on launch.",
+    "Use Lucide-React icons, Sonner for notifications, and Framer Motion for micro-animations on form submission and card hover states.",
+    "Ensure 100% compliance with data-testid attribute rules on all actionable elements."
+  ]
+}
