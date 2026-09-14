@@ -415,7 +415,7 @@ def _format_brl(v: float) -> str:
     return "R$ " + s.replace(",", "X").replace(".", ",").replace("X", ".")
 
 
-def _build_email_html(record: dict, message: Optional[str], attachments: List[dict], download_links: List[dict]) -> str:
+def _build_email_html(record: dict, message: Optional[str], attachments: List[dict]) -> str:
     company = escape(record.get("company_name", ""))
     cnpj = escape(_mask_cnpj_pt(record.get("cnpj", "")))
     cte = escape(record.get("cte_number", ""))
@@ -427,23 +427,11 @@ def _build_email_html(record: dict, message: Optional[str], attachments: List[di
         f'<td style="padding:8px 0;color:#0f172a;font-size:14px">{notes}</td></tr>'
     ) if notes else ""
 
-    if download_links:
-        rows = "".join(
-            f'<tr><td style="padding:6px 0">'
-            f'<span style="color:#0f172a;font-size:14px;font-weight:600">&#128206; {escape(d["filename"])}</span> '
-            f'<span style="color:#94a3b8;font-size:12px">&middot; {escape(d["size"])} &middot; </span>'
-            f'<a href="{escape(d["url"])}" '
-            f'style="color:#059669;font-size:13px;font-weight:600;text-decoration:underline">Baixar</a>'
-            f'</td></tr>'
-            for d in download_links
-        )
+    if attachments:
         receipts_section = (
-            f'<div style="margin-top:24px;padding-top:16px;border-top:1px solid #e2e8f0">'
-            f'<div style="color:#64748b;font-size:12px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px">'
-            f'Comprovantes ({len(download_links)})</div>'
-            f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0">{rows}</table>'
-            f'<p style="margin:10px 0 0;color:#94a3b8;font-size:11px">Os arquivos também estão anexados ao e-mail. Se não aparecerem no seu cliente, use os links acima para baixar.</p>'
-            f'</div>'
+            f'<p style="margin:16px 0 0;color:#64748b;font-size:12px">'
+            f'&#128206; <strong>{len(attachments)} comprovante(s) anexado(s)</strong> a este e-mail'
+            f'</p>'
         )
     else:
         receipts_section = '<p style="margin:16px 0 0;color:#64748b;font-size:12px">Nenhum comprovante anexado neste envio.</p>'
@@ -492,7 +480,6 @@ async def send_record_email(record_id: str, payload: SendEmailPayload):
         raise HTTPException(status_code=400, detail="Máximo de 20 destinatários por envio")
 
     attachments = []
-    download_links = []
     total_size = 0
     if payload.attach_receipts:
         for r in (record.get("receipts") or []):
@@ -507,25 +494,18 @@ async def send_record_email(record_id: str, payload: SendEmailPayload):
             fname = file_doc.get("original_filename") or f"comprovante-{r.get('id')}.bin"
             ctype = file_doc.get("content_type") or "application/octet-stream"
             size = len(data)
-            if PUBLIC_URL:
-                download_links.append({
-                    "url": f"{PUBLIC_URL}/api/files/{r.get('id')}",
-                    "filename": fname,
-                    "size": _human_size(size),
-                })
             total_size += size
             if total_size > 20 * 1024 * 1024:
-                logger.warning("Anexos excedem 20MB — parando de anexar binário (links continuam)")
-                continue
+                logger.warning("Anexos excedem 20MB — pulando restante")
+                break
             attachments.append({
                 "filename": fname,
                 "content": base64.b64encode(data).decode("ascii"),
                 "content_type": ctype,
-                "type": ctype,
             })
 
     subject = f"CT-e {record.get('cte_number','')} - {record.get('company_name','')}"[:150]
-    html = _build_email_html(record, payload.message, attachments, download_links)
+    html = _build_email_html(record, payload.message, attachments)
     email_id = await _resend_send(
         to=recipients,
         subject=subject,
@@ -547,7 +527,6 @@ async def send_record_email(record_id: str, payload: SendEmailPayload):
         "ok": True,
         "email_id": email_id,
         "attachments_count": len(attachments),
-        "download_links_count": len(download_links),
         "recipients": recipients,
     }
 
