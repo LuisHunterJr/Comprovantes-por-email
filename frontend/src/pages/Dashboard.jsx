@@ -40,10 +40,10 @@ export default function Dashboard() {
   const [previewFile, setPreviewFile] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [emailTarget, setEmailTarget] = useState(null);
-  const [defaultRecipient, setDefaultRecipient] = useState("");
+  const [defaultRecipients, setDefaultRecipients] = useState([]);
 
   useEffect(() => {
-    api.get("/settings").then((r) => setDefaultRecipient(r.data.default_recipient || "")).catch(() => {});
+    api.get("/settings").then((r) => setDefaultRecipients(r.data.default_recipients || [])).catch(() => {});
   }, []);
 
   const refresh = useCallback(async () => {
@@ -173,7 +173,7 @@ export default function Dashboard() {
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
             BrasilAPI conectada
           </Badge>
-          <SettingsDialog onSaved={(v) => setDefaultRecipient(v || "")} />
+          <SettingsDialog onSaved={(list) => setDefaultRecipients(list || [])} />
         </div>
         </div>
       </header>
@@ -471,7 +471,7 @@ export default function Dashboard() {
         record={emailTarget}
         open={!!emailTarget}
         onOpenChange={(o) => !o && setEmailTarget(null)}
-        defaultRecipient={defaultRecipient}
+        defaultRecipients={defaultRecipients}
       />
 
       {/* Delete confirmation */}

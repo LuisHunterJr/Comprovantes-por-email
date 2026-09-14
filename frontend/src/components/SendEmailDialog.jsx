@@ -26,7 +26,7 @@ const parseEmails = (raw) => {
   return { valid, invalid };
 };
 
-export default function SendEmailDialog({ record, open, onOpenChange, defaultRecipient }) {
+export default function SendEmailDialog({ record, open, onOpenChange, defaultRecipients }) {
   const [to, setTo] = useState("");
   const [message, setMessage] = useState("");
   const [attach, setAttach] = useState(true);
@@ -34,11 +34,12 @@ export default function SendEmailDialog({ record, open, onOpenChange, defaultRec
 
   useEffect(() => {
     if (open) {
-      setTo(defaultRecipient || "");
+      const list = Array.isArray(defaultRecipients) ? defaultRecipients : [];
+      setTo(list.join(", "));
       setMessage("");
       setAttach(true);
     }
-  }, [open, defaultRecipient]);
+  }, [open, defaultRecipients]);
 
   const parsed = useMemo(() => parseEmails(to), [to]);
 
@@ -62,7 +63,8 @@ export default function SendEmailDialog({ record, open, onOpenChange, defaultRec
       });
       const n = res.data.recipients?.length || 1;
       const att = res.data.attachments_count || 0;
-      toast.success(`E-mail enviado para ${n} destinatário(s)` + (att ? ` com ${att} anexo(s)` : ""));
+      const links = res.data.download_links_count || 0;
+      toast.success(`E-mail enviado para ${n} destinatário(s)` + (att ? ` com ${att} anexo(s)` : links ? ` com ${links} link(s) de download` : ""));
       onOpenChange(false);
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Falha ao enviar e-mail");
@@ -120,8 +122,9 @@ export default function SendEmailDialog({ record, open, onOpenChange, defaultRec
                 ))}
               </div>
             )}
-            {defaultRecipient && parsed.valid.length === 1 && parsed.valid[0] === defaultRecipient && (
-              <span className="text-[11px] text-emerald-400">Usando destinatário padrão</span>
+            {defaultRecipients && defaultRecipients.length > 0 && parsed.valid.length === defaultRecipients.length &&
+              parsed.valid.every((e, i) => e === defaultRecipients[i]) && (
+              <span className="text-[11px] text-emerald-400">Usando destinatários padrão ({defaultRecipients.length})</span>
             )}
           </div>
 

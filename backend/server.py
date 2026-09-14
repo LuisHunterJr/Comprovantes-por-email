@@ -80,17 +80,15 @@ def put_object(path: str, data: bytes, content_type: str) -> dict:
 
 
 def get_object(path: str) -> tuple[bytes, str]:
-    key = init_storage()
-    resp = requests.get(
-        f"{STORAGE_URL}/objects/{path}",
-        headers={"X-Storage-Key": key}, timeout=60
-    )
-    if resp.status_code == 404:
-        key = init_storage(force=True)
+    for attempt in (0, 1):
+        key = init_storage(force=(attempt == 1))
         resp = requests.get(
             f"{STORAGE_URL}/objects/{path}",
             headers={"X-Storage-Key": key}, timeout=60
         )
+        if resp.status_code in (403, 404) and attempt == 0:
+            continue
+        break
     resp.raise_for_status()
     return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
 
@@ -265,21 +263,55 @@ SETTINGS_ID = "singleton"
 
 
 class Settings(BaseModel):
-    default_recipient: Optional[EmailStr] = None
+    default_recipients: List[EmailStr] = Field(default_factory=list)
     default_subject_template: str = "CT-e {cte} - {company}"
+
+
+def _normalize_settings_doc(doc: dict) -> dict:
+    """Migrate legacy single default_recipient into the new list, dedupe, cap at 5."""
+    if not doc:
+        return {"default_recipients": [], "default_subject_template": "CT-e {cte} - {company}"}
+    recipients = list(doc.get("default_recipients") or [])
+    legacy = doc.get("default_recipient")
+    if legacy and legacy not in recipients:
+        recipients.insert(0, legacy)
+    seen = set()
+    unique = []
+    for r in recipients:
+        k = r.lower()
+        if k not in seen:
+            unique.append(r)
+            seen.add(k)
+    return {
+        "default_recipients": unique[:5],
+        "default_subject_template": doc.get("default_subject_template") or "CT-e {cte} - {company}",
+    }
 
 
 @api_router.get("/settings", response_model=Settings)
 async def get_settings():
     doc = await db.settings.find_one({"_id": SETTINGS_ID}, {"_id": 0})
-    return doc or Settings().model_dump()
+    return _normalize_settings_doc(doc or {})
 
 
 @api_router.put("/settings", response_model=Settings)
 async def update_settings(payload: Settings):
-    data = payload.model_dump()
+    if len(payload.default_recipients) > 5:
+        raise HTTPException(status_code=400, detail="Máximo de 5 destinatários padrão")
+    seen = set()
+    unique = []
+    for r in payload.default_recipients:
+        k = str(r).lower()
+        if k not in seen:
+            unique.append(str(r))
+            seen.add(k)
+    data = {
+        "default_recipients": unique,
+        "default_subject_template": payload.default_subject_template,
+        "default_recipient": None,  # clear legacy field
+    }
     await db.settings.update_one({"_id": SETTINGS_ID}, {"$set": data}, upsert=True)
-    return payload
+    return Settings(default_recipients=unique, default_subject_template=payload.default_subject_template)
 
 
 # ---------- Email guardrail gate (playbook, verbatim) ----------
@@ -376,7 +408,16 @@ async def _resend_send(to: List[str], subject: str, html: str, attachments: List
         )
     if resp.status_code >= 400:
         logger.error(f"Email send failed: {resp.status_code} {resp.text}")
-        raise HTTPException(status_code=502, detail=f"Falha no envio ({resp.status_code}): {resp.text[:200]}")
+        detail = f"Falha no envio ({resp.status_code}): {resp.text[:200]}"
+        try:
+            j = resp.json()
+            if j.get("code") == "undeliverable_recipient":
+                detail = "Um dos e-mails informados é inválido ou de teste. Use endereços reais (não exemplo.com/teste.com)."
+            elif j.get("message"):
+                detail = j["message"]
+        except Exception:
+            pass
+        raise HTTPException(status_code=502, detail=detail)
     try:
         return resp.json().get("id")
     except Exception:
@@ -415,7 +456,7 @@ def _format_brl(v: float) -> str:
     return "R$ " + s.replace(",", "X").replace(".", ",").replace("X", ".")
 
 
-def _build_email_html(record: dict, message: Optional[str], attachments: List[dict]) -> str:
+def _build_email_html(record: dict, message: Optional[str], attachments: List[dict], download_links: List[dict]) -> str:
     company = escape(record.get("company_name", ""))
     cnpj = escape(_mask_cnpj_pt(record.get("cnpj", "")))
     cte = escape(record.get("cte_number", ""))
@@ -427,11 +468,23 @@ def _build_email_html(record: dict, message: Optional[str], attachments: List[di
         f'<td style="padding:8px 0;color:#0f172a;font-size:14px">{notes}</td></tr>'
     ) if notes else ""
 
-    if attachments:
+    if download_links:
+        rows = "".join(
+            f'<tr><td style="padding:6px 0">'
+            f'<span style="color:#0f172a;font-size:14px;font-weight:600">&#128206; {escape(d["filename"])}</span> '
+            f'<span style="color:#94a3b8;font-size:12px">&middot; {escape(d["size"])} &middot; </span>'
+            f'<a href="{escape(d["url"])}" '
+            f'style="color:#059669;font-size:13px;font-weight:600;text-decoration:underline">Baixar</a>'
+            f'</td></tr>'
+            for d in download_links
+        )
         receipts_section = (
-            f'<p style="margin:16px 0 0;color:#64748b;font-size:12px">'
-            f'&#128206; <strong>{len(attachments)} comprovante(s) anexado(s)</strong> a este e-mail'
-            f'</p>'
+            f'<div style="margin-top:24px;padding-top:16px;border-top:1px solid #e2e8f0">'
+            f'<div style="color:#64748b;font-size:12px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px">'
+            f'Comprovantes ({len(download_links)})</div>'
+            f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0">{rows}</table>'
+            f'<p style="margin:10px 0 0;color:#94a3b8;font-size:11px">Clique em Baixar para abrir cada comprovante direto no navegador.</p>'
+            f'</div>'
         )
     else:
         receipts_section = '<p style="margin:16px 0 0;color:#64748b;font-size:12px">Nenhum comprovante anexado neste envio.</p>'
@@ -480,6 +533,7 @@ async def send_record_email(record_id: str, payload: SendEmailPayload):
         raise HTTPException(status_code=400, detail="Máximo de 20 destinatários por envio")
 
     attachments = []
+    download_links = []
     total_size = 0
     if payload.attach_receipts:
         for r in (record.get("receipts") or []):
@@ -489,15 +543,21 @@ async def send_record_email(record_id: str, payload: SendEmailPayload):
             try:
                 data, _ct = get_object(file_doc["storage_path"])
             except Exception as e:
-                logger.error(f"Skipping attachment {r.get('id')}: {e}")
+                logger.error(f"Skipping receipt {r.get('id')}: {e}")
                 continue
             fname = file_doc.get("original_filename") or f"comprovante-{r.get('id')}.bin"
             ctype = file_doc.get("content_type") or "application/octet-stream"
             size = len(data)
+            if PUBLIC_URL:
+                download_links.append({
+                    "url": f"{PUBLIC_URL}/api/files/{r.get('id')}",
+                    "filename": fname,
+                    "size": _human_size(size),
+                })
             total_size += size
             if total_size > 20 * 1024 * 1024:
-                logger.warning("Anexos excedem 20MB — pulando restante")
-                break
+                logger.warning("Anexos excedem 20MB — mantendo apenas links")
+                continue
             attachments.append({
                 "filename": fname,
                 "content": base64.b64encode(data).decode("ascii"),
@@ -505,7 +565,7 @@ async def send_record_email(record_id: str, payload: SendEmailPayload):
             })
 
     subject = f"CT-e {record.get('cte_number','')} - {record.get('company_name','')}"[:150]
-    html = _build_email_html(record, payload.message, attachments)
+    html = _build_email_html(record, payload.message, attachments, download_links)
     email_id = await _resend_send(
         to=recipients,
         subject=subject,
@@ -514,12 +574,13 @@ async def send_record_email(record_id: str, payload: SendEmailPayload):
         reply_to=EMAIL_REPLY_TO,
     )
 
-    # Save first recipient as default if none saved yet
+    # Save recipients as defaults if none saved yet
     existing = await db.settings.find_one({"_id": SETTINGS_ID}, {"_id": 0})
-    if not existing or not existing.get("default_recipient"):
+    normalized = _normalize_settings_doc(existing or {})
+    if not normalized["default_recipients"]:
         await db.settings.update_one(
             {"_id": SETTINGS_ID},
-            {"$set": {"default_recipient": recipients[0]}},
+            {"$set": {"default_recipients": recipients[:5]}},
             upsert=True,
         )
 
@@ -527,6 +588,7 @@ async def send_record_email(record_id: str, payload: SendEmailPayload):
         "ok": True,
         "email_id": email_id,
         "attachments_count": len(attachments),
+        "download_links_count": len(download_links),
         "recipients": recipients,
     }
 
