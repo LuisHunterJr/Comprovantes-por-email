@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { motion } from "framer-motion";
 import { toast } from "sonner";
-import { Truck, FileText, Upload, Search, Trash2, Eye, Copy, CheckCircle2, Loader2, Package, Wallet, ReceiptText, TrendingUp } from "lucide-react";
+import { Truck, FileText, Upload, Search, Trash2, Eye, Copy, CheckCircle2, Loader2, Package, Wallet, ReceiptText, TrendingUp, Mail } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -13,8 +13,11 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Textarea } from "@/components/ui/textarea";
 import CteHighlight from "@/components/CteHighlight";
 import ReceiptUpload from "@/components/ReceiptUpload";
+import SettingsDialog from "@/components/SettingsDialog";
+import SendEmailDialog from "@/components/SendEmailDialog";
 import { maskCNPJ, onlyDigits, formatBRL, parseBRLInput, formatDate } from "@/lib/format";
 import { lookupCnpj, createRecord, listRecords, deleteRecord, getStats, fileUrl } from "@/lib/api";
+import { api } from "@/lib/api";
 
 const INITIAL_FORM = {
   cnpj: "",
@@ -36,6 +39,12 @@ export default function Dashboard() {
   const [stats, setStats] = useState({ total_records: 0, total_value: 0, total_receipts: 0, average_value: 0 });
   const [previewFile, setPreviewFile] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
+  const [emailTarget, setEmailTarget] = useState(null);
+  const [defaultRecipient, setDefaultRecipient] = useState("");
+
+  useEffect(() => {
+    api.get("/settings").then((r) => setDefaultRecipient(r.data.default_recipient || "")).catch(() => {});
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -149,7 +158,7 @@ export default function Dashboard() {
     <div className="min-h-screen bg-background text-foreground">
       {/* Header */}
       <header className="border-b border-border/60 bg-[#0B0F17]/80 backdrop-blur sticky top-0 z-30">
-        <div className="max-w-[1400px] mx-auto px-4 md:px-8 py-5 flex items-center justify-between">
+        <div className="max-w-[1400px] mx-auto px-4 md:px-8 py-5 flex items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-lg bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center">
               <Truck className="w-5 h-5 text-emerald-400" strokeWidth={2.4} />
@@ -159,10 +168,13 @@ export default function Dashboard() {
               <h1 className="font-display text-2xl md:text-3xl font-bold tracking-tight">CT-e & Comprovantes</h1>
             </div>
           </div>
+          <div className="flex items-center gap-2">
           <Badge variant="outline" className="hidden md:inline-flex border-emerald-500/40 text-emerald-400 bg-emerald-500/5 gap-2">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
             BrasilAPI conectada
           </Badge>
+          <SettingsDialog onSaved={(v) => setDefaultRecipient(v || "")} />
+        </div>
         </div>
       </header>
 
@@ -398,6 +410,16 @@ export default function Dashboard() {
                           <TableCell className="text-xs text-muted-foreground">{formatDate(r.created_at)}</TableCell>
                           <TableCell className="text-right">
                             <div className="flex justify-end gap-1">
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => setEmailTarget(r)}
+                                data-testid={`send-email-btn-${r.id}`}
+                                className="text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10"
+                                title="Enviar por e-mail"
+                              >
+                                <Mail className="w-4 h-4" />
+                              </Button>
                               {(r.receipts || []).length > 0 && (
                                 <Button
                                   variant="ghost"
@@ -443,6 +465,14 @@ export default function Dashboard() {
           )}
         </DialogContent>
       </Dialog>
+
+      {/* Send email dialog */}
+      <SendEmailDialog
+        record={emailTarget}
+        open={!!emailTarget}
+        onOpenChange={(o) => !o && setEmailTarget(null)}
+        defaultRecipient={defaultRecipient}
+      />
 
       {/* Delete confirmation */}
       <AlertDialog open={!!confirmDelete} onOpenChange={(o) => !o && setConfirmDelete(null)}>

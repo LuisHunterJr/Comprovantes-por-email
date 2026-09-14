@@ -6,9 +6,15 @@ import os
 import logging
 import re
 import uuid
+import base64
+import ipaddress
+import httpx
 import requests
+from html import escape
+from html.parser import HTMLParser
+from urllib.parse import urlparse
 from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, EmailStr
 from typing import List, Optional
 from datetime import datetime, timezone
 
@@ -27,6 +33,12 @@ STORAGE_URL = STORAGE_BASE.rstrip("/") + "/objstore/api/v1/storage"
 EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY")
 APP_NAME = "cte-panel"
 _storage_key: Optional[str] = None
+
+# Emergent Email (Resend managed)
+EMAIL_BASE_URL = "https://integrations.emergentagent.com"
+EMAIL_KEY = os.environ.get("EMERGENT_EMAIL_KEY")
+EMAIL_FROM_NAME = os.environ.get("EMAIL_FROM_NAME", "Painel CT-e")
+EMAIL_REPLY_TO = os.environ.get("EMAIL_REPLY_TO")
 
 MIME_TYPES = {
     "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
@@ -245,6 +257,249 @@ async def delete_record(record_id: str):
         await db.files.update_one({"id": r["id"]}, {"$set": {"is_deleted": True}})
     await db.records.delete_one({"id": record_id})
     return {"ok": True}
+
+
+# ---------- Settings (single doc) ----------
+SETTINGS_ID = "singleton"
+
+
+class Settings(BaseModel):
+    default_recipient: Optional[EmailStr] = None
+    default_subject_template: str = "CT-e {cte} - {company}"
+
+
+@api_router.get("/settings", response_model=Settings)
+async def get_settings():
+    doc = await db.settings.find_one({"_id": SETTINGS_ID}, {"_id": 0})
+    return doc or Settings().model_dump()
+
+
+@api_router.put("/settings", response_model=Settings)
+async def update_settings(payload: Settings):
+    data = payload.model_dump()
+    await db.settings.update_one({"_id": SETTINGS_ID}, {"$set": data}, upsert=True)
+    return payload
+
+
+# ---------- Email guardrail gate (playbook, verbatim) ----------
+_SHORTENERS = ("bit.ly", "tinyurl.com", "t.co", "is.gd", "cutt.ly", "goo.gl", "rebrand.ly")
+_CRED_ASK = ("reply with your password", "reply with the code", "send your password", "cvv",
+             "send us your password", "enter your password below", "confirm your card number",
+             "your full card number", "seed phrase", "recovery phrase", "verify your card",
+             "social security number", "confirm your bank details")
+_HOSTISH = re.compile(r"\b(?:https?://)?((?:[a-z0-9-]+\.)+[a-z]{2,})", re.I)
+
+
+def _host_ok(host: str) -> bool:
+    if not host or "xn--" in host:
+        return False
+    try:
+        ipaddress.ip_address(host)
+        return False
+    except ValueError:
+        pass
+    return not any(host == s or host.endswith("." + s) for s in _SHORTENERS)
+
+
+def _same_site(shown: str, real: str) -> bool:
+    return shown == real or real.endswith("." + shown) or shown.endswith("." + real)
+
+
+class _EmailScan(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.tags, self.urls, self.anchors = set(), [], []
+        self._href, self._text = None, []
+
+    def handle_starttag(self, tag, attrs):
+        self.tags.add(tag.lower())
+        self.urls += [v for k, v in attrs if k.lower() in ("href", "src") and v]
+        if tag.lower() == "a":
+            self._href = dict((k.lower(), v) for k, v in attrs).get("href")
+            self._text = []
+
+    def handle_data(self, data):
+        if self._href is not None:
+            self._text.append(data)
+
+    def handle_endtag(self, tag):
+        if tag.lower() == "a" and self._href is not None:
+            self.anchors.append((self._href, "".join(self._text)))
+            self._href, self._text = None, []
+
+
+def _assert_safe_email(subject: str, html: str) -> None:
+    scan = _EmailScan()
+    scan.feed(html)
+    if scan.tags & {"form", "input", "textarea", "select"}:
+        raise ValueError("No forms or input fields in email (G2)")
+    body = f"{subject}\n{html}".lower()
+    for p in _CRED_ASK:
+        if p in body:
+            raise ValueError(f"Email asks the recipient for credentials: {p!r} (G2)")
+    for url in scan.urls:
+        low = url.strip().lower()
+        if low.startswith(("mailto:", "tel:", "cid:", "#")):
+            continue
+        if not low.startswith("https://"):
+            raise ValueError(f"Email links/assets must be absolute https: {url!r} (G3)")
+        host = urlparse(low).hostname or ""
+        if not _host_ok(host) or urlparse(low).username is not None:
+            raise ValueError(f"Shortened, numeric-host or credential-bearing URL: {url!r} (G3)")
+    for href, text in scan.anchors:
+        real = urlparse(href.strip().lower()).hostname or ""
+        if not real:
+            continue
+        for m in _HOSTISH.finditer(text):
+            if not _same_site(m.group(1).lower(), real):
+                raise ValueError(f"Anchor text {m.group(1)!r} != real link host {real!r} (G3)")
+
+
+async def _resend_send(to: str, subject: str, html: str, attachments: List[dict], reply_to: Optional[str]) -> Optional[str]:
+    _assert_safe_email(subject, html)
+    payload = {
+        "to": [to],
+        "subject": subject,
+        "html": html,
+        "from_name": EMAIL_FROM_NAME,
+    }
+    if attachments:
+        payload["attachments"] = attachments
+    if reply_to or EMAIL_REPLY_TO:
+        payload["contact_email"] = reply_to or EMAIL_REPLY_TO
+    async with httpx.AsyncClient(timeout=60) as clientx:
+        resp = await clientx.post(
+            f"{EMAIL_BASE_URL}/api/v1/email/send",
+            headers={"X-Email-Key": EMAIL_KEY},
+            json=payload,
+        )
+    if resp.status_code >= 400:
+        logger.error(f"Email send failed: {resp.status_code} {resp.text}")
+        raise HTTPException(status_code=502, detail=f"Falha no envio ({resp.status_code}): {resp.text[:200]}")
+    try:
+        return resp.json().get("id")
+    except Exception:
+        return None
+
+
+class SendEmailPayload(BaseModel):
+    to: EmailStr
+    message: Optional[str] = None
+    attach_receipts: bool = True
+
+
+def _mask_cnpj_pt(cnpj: str) -> str:
+    c = re.sub(r"\D", "", cnpj or "")
+    if len(c) != 14:
+        return cnpj
+    return f"{c[0:2]}.{c[2:5]}.{c[5:8]}/{c[8:12]}-{c[12:14]}"
+
+
+def _format_brl(v: float) -> str:
+    s = f"{v:,.2f}"
+    # en-US -> pt-BR
+    return "R$ " + s.replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def _build_email_html(record: dict, message: Optional[str], attachments_count: int) -> str:
+    company = escape(record.get("company_name", ""))
+    cnpj = escape(_mask_cnpj_pt(record.get("cnpj", "")))
+    cte = escape(record.get("cte_number", ""))
+    valor = escape(_format_brl(float(record.get("payment_value", 0))))
+    notes = escape(record.get("notes") or "")
+    msg_html = f'<p style="margin:0 0 16px;color:#334155;font-size:14px;line-height:1.6">{escape(message)}</p>' if message else ""
+    notes_row = (
+        f'<tr><td style="padding:8px 0;color:#64748b;font-size:12px;text-transform:uppercase;letter-spacing:0.08em;width:150px">Observações</td>'
+        f'<td style="padding:8px 0;color:#0f172a;font-size:14px">{notes}</td></tr>'
+    ) if notes else ""
+    attach_html = (
+        f'<p style="margin:16px 0 0;color:#64748b;font-size:12px">Comprovantes anexados: <strong>{attachments_count}</strong></p>'
+        if attachments_count else
+        '<p style="margin:16px 0 0;color:#64748b;font-size:12px">Nenhum comprovante anexado neste envio.</p>'
+    )
+    return (
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;padding:24px 0;font-family:Arial,Helvetica,sans-serif">'
+        f'<tr><td align="center">'
+        f'<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e2e8f0">'
+        f'<tr><td style="background:#1E1B4B;padding:20px 24px">'
+        f'<div style="color:#A5B4FC;font-size:11px;letter-spacing:0.2em;text-transform:uppercase;font-weight:700">Conhecimento de Transporte Eletrônico</div>'
+        f'<div style="color:#F1F5F9;font-size:32px;font-weight:800;letter-spacing:0.08em;font-family:Consolas,Menlo,monospace;margin-top:6px">CT-e {cte}</div>'
+        f'</td></tr>'
+        f'<tr><td style="padding:24px">'
+        f'{msg_html}'
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0">'
+        f'<tr><td style="padding:8px 0;color:#64748b;font-size:12px;text-transform:uppercase;letter-spacing:0.08em;width:150px">Empresa</td>'
+        f'<td style="padding:8px 0;color:#0f172a;font-size:14px;font-weight:600">{company}</td></tr>'
+        f'<tr><td style="padding:8px 0;color:#64748b;font-size:12px;text-transform:uppercase;letter-spacing:0.08em">CNPJ</td>'
+        f'<td style="padding:8px 0;color:#0f172a;font-size:14px;font-family:Consolas,Menlo,monospace">{cnpj}</td></tr>'
+        f'<tr><td style="padding:8px 0;color:#64748b;font-size:12px;text-transform:uppercase;letter-spacing:0.08em">Valor do pagamento</td>'
+        f'<td style="padding:8px 0;color:#059669;font-size:16px;font-weight:700">{valor}</td></tr>'
+        f'{notes_row}'
+        f'</table>'
+        f'{attach_html}'
+        f'</td></tr>'
+        f'<tr><td style="padding:16px 24px;background:#f1f5f9;color:#94a3b8;font-size:11px">'
+        f'Enviado por {escape(EMAIL_FROM_NAME)}. Este é um e-mail transacional automático.'
+        f'</td></tr>'
+        f'</table>'
+        f'</td></tr></table>'
+    )
+
+
+@api_router.post("/records/{record_id}/send-email")
+async def send_record_email(record_id: str, payload: SendEmailPayload):
+    if not EMAIL_KEY:
+        raise HTTPException(status_code=500, detail="Serviço de e-mail não configurado")
+    record = await db.records.find_one({"id": record_id}, {"_id": 0})
+    if not record:
+        raise HTTPException(status_code=404, detail="Registro não encontrado")
+
+    attachments = []
+    total_size = 0
+    if payload.attach_receipts:
+        for r in (record.get("receipts") or []):
+            file_doc = await db.files.find_one({"id": r.get("id"), "is_deleted": False}, {"_id": 0})
+            if not file_doc:
+                continue
+            try:
+                data, _ct = get_object(file_doc["storage_path"])
+            except Exception as e:
+                logger.error(f"Skipping attachment {r.get('id')}: {e}")
+                continue
+            total_size += len(data)
+            if total_size > 20 * 1024 * 1024:
+                logger.warning("Anexos excedem 20MB — parando de anexar")
+                break
+            attachments.append({
+                "filename": file_doc.get("original_filename") or f"comprovante-{r.get('id')}.bin",
+                "content": base64.b64encode(data).decode("ascii"),
+            })
+
+    subject = f"CT-e {record.get('cte_number','')} - {record.get('company_name','')}"[:150]
+    html = _build_email_html(record, payload.message, len(attachments))
+    email_id = await _resend_send(
+        to=payload.to,
+        subject=subject,
+        html=html,
+        attachments=attachments,
+        reply_to=EMAIL_REPLY_TO,
+    )
+
+    # Save recipient as default if none saved yet
+    existing = await db.settings.find_one({"_id": SETTINGS_ID}, {"_id": 0})
+    if not existing or not existing.get("default_recipient"):
+        await db.settings.update_one(
+            {"_id": SETTINGS_ID},
+            {"$set": {"default_recipient": payload.to}},
+            upsert=True,
+        )
+
+    return {
+        "ok": True,
+        "email_id": email_id,
+        "attachments_count": len(attachments),
+        "to": payload.to,
+    }
 
 
 @api_router.get("/stats")
