@@ -105,9 +105,19 @@ class Receipt(BaseModel):
 class RecordCreate(BaseModel):
     cnpj: str
     company_name: str
-    cte_number: str
+    cte_number: str = ""
+    nf_number: str = ""
     payment_value: float
+    status: str = "aguardando"  # aguardando | emitido
     receipts: List[Receipt] = []
+    notes: Optional[str] = None
+
+
+class RecordUpdate(BaseModel):
+    cte_number: Optional[str] = None
+    nf_number: Optional[str] = None
+    status: Optional[str] = None
+    payment_value: Optional[float] = None
     notes: Optional[str] = None
 
 
@@ -116,8 +126,10 @@ class Record(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     cnpj: str
     company_name: str
-    cte_number: str
+    cte_number: str = ""
+    nf_number: str = ""
     payment_value: float
+    status: str = "aguardando"
     receipts: List[Receipt] = []
     notes: Optional[str] = None
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
@@ -197,7 +209,9 @@ async def upload_file(file: UploadFile = File(...)):
 
 @api_router.get("/files/{file_id}")
 async def download_file(file_id: str):
-    doc = await db.files.find_one({"id": file_id, "is_deleted": False}, {"_id": 0})
+    # Serve o arquivo mesmo se o registro foi apagado (is_deleted) — os links
+    # enviados por e-mail devem continuar funcionando para os destinatários.
+    doc = await db.files.find_one({"id": file_id}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Arquivo não encontrado")
     data, ct = get_object(doc["storage_path"])
@@ -215,17 +229,44 @@ async def create_record(payload: RecordCreate):
     cnpj = clean_cnpj(payload.cnpj)
     if len(cnpj) != 14:
         raise HTTPException(status_code=400, detail="CNPJ inválido")
+    status = payload.status if payload.status in ("aguardando", "emitido") else "aguardando"
     record = Record(
         cnpj=cnpj,
         company_name=payload.company_name.strip(),
-        cte_number=payload.cte_number.strip(),
+        cte_number=(payload.cte_number or "").strip(),
+        nf_number=(payload.nf_number or "").strip(),
         payment_value=float(payload.payment_value),
+        status=status,
         receipts=payload.receipts,
         notes=payload.notes,
     )
     doc = record.model_dump()
     await db.records.insert_one(doc)
     return record
+
+
+@api_router.patch("/records/{record_id}", response_model=Record)
+async def update_record(record_id: str, payload: RecordUpdate):
+    existing = await db.records.find_one({"id": record_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Registro não encontrado")
+    updates: dict = {}
+    if payload.cte_number is not None:
+        updates["cte_number"] = payload.cte_number.strip()
+    if payload.nf_number is not None:
+        updates["nf_number"] = payload.nf_number.strip()
+    if payload.status is not None:
+        if payload.status not in ("aguardando", "emitido"):
+            raise HTTPException(status_code=400, detail="Status inválido")
+        updates["status"] = payload.status
+    if payload.payment_value is not None:
+        updates["payment_value"] = float(payload.payment_value)
+    if payload.notes is not None:
+        updates["notes"] = payload.notes
+    if updates:
+        await db.records.update_one({"id": record_id}, {"$set": updates})
+    doc = await db.records.find_one({"id": record_id}, {"_id": 0})
+    return doc
 
 
 @api_router.get("/records", response_model=List[Record])
@@ -537,7 +578,9 @@ async def send_record_email(record_id: str, payload: SendEmailPayload):
     total_size = 0
     if payload.attach_receipts:
         for r in (record.get("receipts") or []):
-            file_doc = await db.files.find_one({"id": r.get("id"), "is_deleted": False}, {"_id": 0})
+            # Aceita mesmo arquivos marcados como is_deleted, garantindo que os
+            # links funcionem mesmo depois que o registro é apagado localmente.
+            file_doc = await db.files.find_one({"id": r.get("id")}, {"_id": 0})
             if not file_doc:
                 continue
             try:

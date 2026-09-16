@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { motion } from "framer-motion";
 import { toast } from "sonner";
-import { Truck, FileText, Upload, Search, Trash2, Eye, Copy, CheckCircle2, Loader2, Package, Wallet, ReceiptText, TrendingUp, Mail } from "lucide-react";
+import { Truck, FileText, Upload, Search, Trash2, Eye, Copy, CheckCircle2, Loader2, Package, Wallet, ReceiptText, TrendingUp, Mail, Pencil, Clock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -15,6 +15,7 @@ import CteHighlight from "@/components/CteHighlight";
 import ReceiptUpload from "@/components/ReceiptUpload";
 import SettingsDialog from "@/components/SettingsDialog";
 import SendEmailDialog from "@/components/SendEmailDialog";
+import EditRecordDialog from "@/components/EditRecordDialog";
 import { maskCNPJ, onlyDigits, formatBRL, parseBRLInput, formatDate } from "@/lib/format";
 import { lookupCnpj, createRecord, listRecords, deleteRecord, getStats, fileUrl } from "@/lib/api";
 import { api } from "@/lib/api";
@@ -23,6 +24,7 @@ const INITIAL_FORM = {
   cnpj: "",
   companyName: "",
   cteNumber: "",
+  nfNumber: "",
   paymentValueStr: "",
   notes: "",
 };
@@ -40,6 +42,7 @@ export default function Dashboard() {
   const [previewFile, setPreviewFile] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [emailTarget, setEmailTarget] = useState(null);
+  const [editTarget, setEditTarget] = useState(null);
   const [defaultRecipients, setDefaultRecipients] = useState([]);
 
   useEffect(() => {
@@ -112,7 +115,6 @@ export default function Dashboard() {
     const cnpj = onlyDigits(form.cnpj);
     if (cnpj.length !== 14) return toast.error("Informe um CNPJ válido");
     if (!form.companyName.trim()) return toast.error("Informe a razão social");
-    if (!form.cteNumber.trim()) return toast.error("Informe o número do CT-e");
     const value = parseBRLInput(form.paymentValueStr);
     if (value <= 0) return toast.error("Informe o valor de pagamento");
     try {
@@ -121,7 +123,9 @@ export default function Dashboard() {
         cnpj,
         company_name: form.companyName.trim(),
         cte_number: form.cteNumber.trim(),
+        nf_number: form.nfNumber.trim(),
         payment_value: value,
+        status: form.cteNumber.trim() ? "emitido" : "aguardando",
         receipts,
         notes: form.notes || null,
       });
@@ -260,7 +264,9 @@ export default function Dashboard() {
 
                 {/* CTe number - highlighted preview */}
                 <div className="space-y-2">
-                  <Label className="text-xs uppercase tracking-widest text-muted-foreground">Número do CT-e</Label>
+                  <Label className="text-xs uppercase tracking-widest text-muted-foreground">
+                    Número do CT-e <span className="text-muted-foreground normal-case tracking-normal">(opcional — deixe em branco se aguardando emissão)</span>
+                  </Label>
                   <Input
                     data-testid="cte-number-input"
                     placeholder="Ex.: 000128945"
@@ -269,6 +275,18 @@ export default function Dashboard() {
                     className="font-mono-strong text-lg tracking-wider"
                   />
                   <CteHighlight number={form.cteNumber} />
+                </div>
+
+                {/* NF number */}
+                <div className="space-y-2">
+                  <Label className="text-xs uppercase tracking-widest text-muted-foreground">Número da NF</Label>
+                  <Input
+                    data-testid="nf-number-input"
+                    placeholder="Ex.: 12345"
+                    value={form.nfNumber}
+                    onChange={(e) => setForm({ ...form, nfNumber: e.target.value })}
+                    className="font-mono-strong text-base"
+                  />
                 </div>
 
                 {/* Payment value */}
@@ -374,7 +392,8 @@ export default function Dashboard() {
                   <Table data-testid="records-table">
                     <TableHeader>
                       <TableRow className="bg-secondary/40 hover:bg-secondary/40">
-                        <TableHead className="text-xs uppercase tracking-widest">CT-e</TableHead>
+                        <TableHead className="text-xs uppercase tracking-widest">Status</TableHead>
+                        <TableHead className="text-xs uppercase tracking-widest">CT-e / NF</TableHead>
                         <TableHead className="text-xs uppercase tracking-widest">Empresa</TableHead>
                         <TableHead className="text-xs uppercase tracking-widest">Valor</TableHead>
                         <TableHead className="text-xs uppercase tracking-widest text-center">Comprov.</TableHead>
@@ -385,15 +404,35 @@ export default function Dashboard() {
                     <TableBody>
                       {records.length === 0 && (
                         <TableRow>
-                          <TableCell colSpan={6} className="text-center py-12 text-muted-foreground">
+                          <TableCell colSpan={7} className="text-center py-12 text-muted-foreground">
                             Nenhum registro ainda. Cadastre o primeiro CT-e ao lado.
                           </TableCell>
                         </TableRow>
                       )}
-                      {records.map((r) => (
+                      {records.map((r) => {
+                        const isEmitido = (r.status || "aguardando") === "emitido";
+                        return (
                         <TableRow key={r.id} data-testid={`record-row-${r.id}`} className="hover:bg-secondary/20">
                           <TableCell>
-                            <div className="font-mono-strong font-bold text-indigo-300 text-sm">{r.cte_number}</div>
+                            <span
+                              data-testid={`status-badge-${r.id}`}
+                              className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] font-bold uppercase tracking-wider border ${
+                                isEmitido
+                                  ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-300"
+                                  : "bg-amber-500/15 border-amber-500/40 text-amber-300"
+                              }`}
+                            >
+                              {isEmitido ? <CheckCircle2 className="w-3 h-3" /> : <Clock className="w-3 h-3" />}
+                              {isEmitido ? "Emitido" : "Aguardando"}
+                            </span>
+                          </TableCell>
+                          <TableCell>
+                            <div className="font-mono-strong font-bold text-indigo-300 text-sm">
+                              {r.cte_number || <span className="text-muted-foreground italic font-normal">sem CT-e</span>}
+                            </div>
+                            {r.nf_number && (
+                              <div className="text-xs text-cyan-300 font-mono-strong">NF {r.nf_number}</div>
+                            )}
                           </TableCell>
                           <TableCell>
                             <div className="text-sm font-medium max-w-[220px] truncate">{r.company_name}</div>
@@ -413,13 +452,25 @@ export default function Dashboard() {
                               <Button
                                 variant="ghost"
                                 size="icon"
-                                onClick={() => setEmailTarget(r)}
-                                data-testid={`send-email-btn-${r.id}`}
-                                className="text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10"
-                                title="Enviar por e-mail"
+                                onClick={() => setEditTarget(r)}
+                                data-testid={`edit-record-${r.id}`}
+                                className="text-cyan-400 hover:text-cyan-300 hover:bg-cyan-500/10"
+                                title="Editar registro"
                               >
-                                <Mail className="w-4 h-4" />
+                                <Pencil className="w-4 h-4" />
                               </Button>
+                              {isEmitido && (
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  onClick={() => setEmailTarget(r)}
+                                  data-testid={`send-email-btn-${r.id}`}
+                                  className="text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10"
+                                  title="Enviar por e-mail"
+                                >
+                                  <Mail className="w-4 h-4" />
+                                </Button>
+                              )}
                               {(r.receipts || []).length > 0 && (
                                 <Button
                                   variant="ghost"
@@ -442,7 +493,8 @@ export default function Dashboard() {
                             </div>
                           </TableCell>
                         </TableRow>
-                      ))}
+                        );
+                      })}
                     </TableBody>
                   </Table>
                 </div>
@@ -472,6 +524,14 @@ export default function Dashboard() {
         open={!!emailTarget}
         onOpenChange={(o) => !o && setEmailTarget(null)}
         defaultRecipients={defaultRecipients}
+      />
+
+      {/* Edit record dialog */}
+      <EditRecordDialog
+        record={editTarget}
+        open={!!editTarget}
+        onOpenChange={(o) => !o && setEditTarget(null)}
+        onSaved={() => refresh()}
       />
 
       {/* Delete confirmation */}
