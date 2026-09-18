@@ -449,16 +449,22 @@ async def _resend_send(to: List[str], subject: str, html: str, attachments: List
         )
     if resp.status_code >= 400:
         logger.error(f"Email send failed: {resp.status_code} {resp.text}")
+        status = resp.status_code
         detail = f"Falha no envio ({resp.status_code}): {resp.text[:200]}"
         try:
             j = resp.json()
-            if j.get("code") == "undeliverable_recipient":
+            code = j.get("code")
+            if code == "undeliverable_recipient":
+                status = 422
                 detail = "Um dos e-mails informados é inválido ou de teste. Use endereços reais (não exemplo.com/teste.com)."
+            elif code == "rate_limited" or resp.status_code == 429:
+                status = 429
+                detail = "Muitos e-mails enviados em sequência. Aguarde alguns segundos e tente novamente."
             elif j.get("message"):
                 detail = j["message"]
         except Exception:
             pass
-        raise HTTPException(status_code=502, detail=detail)
+        raise HTTPException(status_code=status, detail=detail)
     try:
         return resp.json().get("id")
     except Exception:
